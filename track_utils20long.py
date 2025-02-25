@@ -56,6 +56,9 @@ def exponential(x,P,Yo,k):
     y=P + ( Yo - P ) * np.exp( -k * x)
     return(y)
 
+def piecewise_exponential(x, x0, P, Yo, k):
+    return np.piecewise(x, [x < x0, x>=x0], [lambda x:Yo, lambda x:P + ( Yo - P ) * np.exp( -k * (x-x0))])
+
 def findwall(pt,chan):
     if pt > chan[0] + 10 and pt < chan[1] - 10:
         y=pt
@@ -71,6 +74,7 @@ def crop(frame, pt430, pt410):
     frames=[]
     c=[]
     top=[np.mean(frame[2][int(0):int(10), int(0):int(40)]),np.mean(frame[3][int(0):int(10), int(0):int(40)])]
+    blue_top=top=[np.mean(frame[0][int(0):int(10), int(0):int(40)]),np.mean(frame[1][int(0):int(10), int(0):int(40)])]
     xs=[pt430[0],pt410[0],pt430[0],pt410[0]]
     # ys=[pt430[1],pt410[1],pt430[1],pt410[1]]
     i=0
@@ -78,7 +82,6 @@ def crop(frame, pt430, pt410):
         img=(f[int(0):int(270), int(xs[i]-20):int(xs[i]+20)])
         Gy = cv.Sobel(img, cv.CV_64F, 0, 1, ksize=3)
         aGy=abs(Gy)
-        plt.imshow(aGy)
         imGy=np.copy(img)
         grad=np.median(aGy,axis=1)
         grad=np.where(grad > 30, 0, 1)
@@ -89,10 +92,9 @@ def crop(frame, pt430, pt410):
         i=i+1
     y430=findwall(pt430[1],c[0])
     y410=findwall(pt410[1],c[1])
-    print(y430)
     frames=[frame[0][int(y430)-10:int(y430)+10, int(xs[0]-20):int(xs[0]+20)],frame[1][int(y410)-10:int(y410)+10, int(xs[1]-20):int(xs[1]+20)],frame[2][int(y430)-10:int(y430)+10, int(xs[0]-20):int(xs[0]+20)],frame[3][int(y410)-10:int(y410)+10, int(xs[1]-20):int(xs[1]+20)]]
     # plt.imshow(frames[0])
-    return frames, top
+    return frames, top, blue_top
 
 
 def bleed(frame, BL):
@@ -172,7 +174,8 @@ def rescale_red(img, mask):
 
 def mass(Hb):
     # x=pt[0]; y=pt[1]
-    parea=6.9
+    # parea=6.9
+    parea=(6.9/20)**2; 
     # Gx = cv.Sobel(img, cv.CV_64F, 1, 0, ksize=3)
     base=np.min(Hb)+(np.max(Hb)-np.min(Hb))/3
     level, cell_mask = cv.threshold(Hb, base, 255, cv.THRESH_BINARY)
@@ -329,8 +332,8 @@ def net(frames, top):
     img = np.zeros([81,81,3])
     img[:,:,0] = imgB430
     img[:,:,1] = imgB410
-    # img[:,:,2] = imgR
-    img[:,:,2] = (imgB430+imgB410)/2
+    img[:,:,2] = imgR
+    # img[:,:,2] = (imgB430+imgB410)/2
     
     vol=(vol430+vol410)/2
     # print(vol)
@@ -338,8 +341,8 @@ def net(frames, top):
 
 # Seperate the frames and find the cell in each frame
 def segment(frames,x_old, y_old,BL):
-    thresh410=30
-    thresh430=30
+    thresh410=25
+    thresh430=25
     img=frames
     if x_old<1 or y_old<1:   
         x_old=180; y_old=135
@@ -385,6 +388,8 @@ def main_run(video): #Run the anaylsis in the video
     hgb=[]
     x=[0,0,0]
     y=[0,0,0]
+    I430=[]
+    I410=[]
     while i<len(video):
         frame1=video[i][0:2]
         frame2=video[i][2:4]
@@ -398,7 +403,7 @@ def main_run(video): #Run the anaylsis in the video
             # print(pt430)
             # print(pt410)
             if pt430[0]>21 and pt410[0]>21 and pt430[0]<339 and pt410[0]<339 and pt430[1]>11 and pt410[1]>11 and pt430[1]<239 and pt410[1]<239:
-                frames, top=crop(frame,pt430,pt410)
+                frames, top, blue_top=crop(frame,pt430,pt410)
                 sats, hbmass=saturation(frames)
                 saturations.append(sats)
                 hgb.append(hbmass)
@@ -407,14 +412,18 @@ def main_run(video): #Run the anaylsis in the video
                 volumes.append(vol)
                 x.append(pt410[0])
                 y.append(pt410[1])
+                I430.append(blue_top[0])
+                I410.append(blue_top[1])
             else:
                 saturations.append(np.nan)
                 volumes.append(np.nan)
                 hgb.append(np.nan)
                 imgs.append(np.zeros([81,81,3]))
                 x.append(0)
+                I430.append(np.nan)
+                I410.append(np.nan)
         i=i+1
-    return imgs, saturations, volumes, x, hgb
+    return imgs, saturations, volumes, x, hgb, I430, I410 
 
 def veiw(video):
     BL=getBL()
@@ -434,11 +443,11 @@ def veiw(video):
             x_old=np.mean(x[-3:])
             y_old=np.mean(y[-3:])
             pt430, pt410, frame = segment(frame,x_old, y_old,BL)
-            gray=cv.resize(frame[0], dsize=(720, 540), interpolation=cv.INTER_CUBIC).astype("uint8")
+            gray=cv.resize(frame[1], dsize=(720, 540), interpolation=cv.INTER_CUBIC).astype("uint8")
             # print(pt430)
             # gray = cv.cvtColor(frame[0], cv.COLOR_BayerBG2GRAY)
             if pt430[0]>21 and pt410[0]>21 and pt430[0]<339 and pt410[0]<339 and pt430[1]>11 and pt410[1]>11 and pt430[1]<239 and pt410[1]<239:
-                frames, top=crop(frame, pt430, pt410)
+                frames, top, b=crop(frame, pt430, pt410)
                 sat, hb=saturation(frames)
                 pt430= np.asarray(pt430, dtype=np.float32)
                 pt410= np.asarray(pt410, dtype=np.float32)
@@ -449,6 +458,7 @@ def veiw(video):
                 cv.rectangle(gray, (locx-40, locy-20), (locx+40, locy+20), (255,100,200),2)
                 # img=cv.resize(img, dsize=(200, 200), interpolation=cv.INTER_CUBIC).astype("uint8")
                 cv.putText(gray, str('%.2f' %sat), (locx-45,locy-45), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 2)
+                cv.putText(gray, str('%f' %i), (45,45), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 2)
             cv.imshow('Single Track', gray)
                 # # # press 'q' to break loop and close window
             cv.waitKey(5)
@@ -498,16 +508,15 @@ def write(video, name):
         gray=cv.resize(frame[0], dsize=(720, 540), interpolation=cv.INTER_CUBIC).astype("uint8")
         # gray = cv.cvtColor(frame[0], cv.COLOR_BayerBG2GRAY)
         if pt430[0]>21 and pt410[0]>21 and pt430[0]<349 and pt410[0]<349 and pt430[1]>11 and pt410[1]>11 and pt430[1]<239 and pt410[1]<239:
-            sat, hb=saturation(frame,pt430,pt410)
+            frames, top=crop(frame, pt430, pt410)
+            sat, hb=saturation(frames)
             pt430= np.asarray(pt430, dtype=np.float32)
             pt410= np.asarray(pt410, dtype=np.float32)
             ptres430=2*pt430; ptres410=2*pt410
-            x.append(pt410[0]); y.append(pt410[1])
-            locx=int(ptres410[0]); locy=int(ptres410[1])
             # img = gray[y-40:y+40,x-40:x+40]
             # cv.rectangle(gray, (locx-20, locy-20), (locx+20, locy+20), (255,100,200),2)
             # # img=cv.resize(img, dsize=(200, 200), interpolation=cv.INTER_CUBIC).astype("uint8")
-            # cv.putText(gray, str('%.2f' %sat), (locx-45,locy-45), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 2)
+            cv.putText(gray, str('%f' %i), (45,45), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 2)
         vid.write(gray)
         i=i+1
     # print(xf)
