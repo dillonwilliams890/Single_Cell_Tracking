@@ -17,33 +17,34 @@ import math
 import scipy.interpolate as interp
 from scipy.ndimage import uniform_filter1d
 from PIL import Image
-import tqdm
-import einops
-import random
-import pathlib
-import itertools
-import collections
-import keras
-import os
+# import tqdm
+# import einops
+# import random
+# import pathlib
+# import itertools
+# import collections
+# import keras
+# import os
 import ruptures as rpt
-from keras import layers
+# from keras import layers
 import seaborn as sns
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, Conv2D, MaxPooling2D
+# import tensorflow as tf
+# from tensorflow.keras.models import Sequential
+# from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, Conv2D, MaxPooling2D
 from PIL import Image
-from tensorflow.keras.applications import ResNet50
-from tensorflow.keras.layers import Dense, Flatten, GlobalAveragePooling2D, BatchNormalization
+# from tensorflow.keras.applications import ResNet50
+# from tensorflow.keras.layers import Dense, Flatten, GlobalAveragePooling2D, BatchNormalization
 from sklearn.metrics import confusion_matrix, classification_report
 import pathlib
-from tensorflow.keras.optimizers import Adam
+# from tensorflow.keras.optimizers import Adam
 import ipyplot
 import glob
 from PIL import Image
 from natsort import natsorted
-from CNN_utils import *
+from scipy.ndimage.morphology import binary_dilation
+# from CNN_utils import *
 
-
+#A few fit functions
 def sigmoid(x, L ,x0, k, b):
     y = L / (1 + np.exp(-k*(x-x0))) + b
     return (y)
@@ -59,44 +60,38 @@ def exponential(x,P,Yo,k):
 def piecewise_exponential(x, x0, P, Yo, k):
     return np.piecewise(x, [x < x0, x>=x0], [lambda x:Yo, lambda x:P + ( Yo - P ) * np.exp( -k * (x-x0))])
 
-def findwall(pt,chan):
-    if pt > chan[0] + 10 and pt < chan[1] - 10:
-        y=pt
-    elif pt > chan[0] + 10 and pt > chan[1] - 10:
-        y=chan[1] - 12
-    elif pt < chan[0] + 10 and pt < chan[1] - 10:
-        y=chan[0] + 12
-    else:
-        y=pt
-    return y
+#Thsin function finds the x location of the cell 
+def find_cell_x(frame):
+    img=frame.astype('uint8')
+    Gy = cv.Sobel(img, cv.CV_64F, 0, 1, ksize=13)
+    aGy=abs(Gy)
+    means=(np.mean(aGy, axis=0))
+    pt=[(np.argwhere(means == means.max()))][0][0]
+    if pt<40 or pt>320:
+        pt=180
+    return pt
 
-def crop(frame, pt430, pt410): 
-    frames=[]
-    c=[]
-    top=[np.mean(frame[2][int(0):int(10), int(0):int(40)]),np.mean(frame[3][int(0):int(10), int(0):int(40)])]
-    blue_top=top=[np.mean(frame[0][int(0):int(10), int(0):int(40)]),np.mean(frame[1][int(0):int(10), int(0):int(40)])]
-    xs=[pt430[0],pt410[0],pt430[0],pt410[0]]
-    # ys=[pt430[1],pt410[1],pt430[1],pt410[1]]
-    i=0
-    for f in frame[2:]:
-        img=(f[int(0):int(270), int(xs[i]-20):int(xs[i]+20)])
-        Gy = cv.Sobel(img, cv.CV_64F, 0, 1, ksize=3)
-        aGy=abs(Gy)
-        imGy=np.copy(img)
-        grad=np.median(aGy,axis=1)
-        grad=np.where(grad > 30, 0, 1)
-        wall=np.where(grad == 0)[0]
-        gap=np.diff(wall)
-        chan=[wall[np.argmax(gap)-1]+1, wall[np.argmax(gap)+1]-1]
-        c.append(chan)
-        i=i+1
-    y430=findwall(pt430[1],c[0])
-    y410=findwall(pt410[1],c[1])
-    frames=[frame[0][int(y430)-10:int(y430)+10, int(xs[0]-20):int(xs[0]+20)],frame[1][int(y410)-10:int(y410)+10, int(xs[1]-20):int(xs[1]+20)],frame[2][int(y430)-10:int(y430)+10, int(xs[0]-20):int(xs[0]+20)],frame[3][int(y410)-10:int(y410)+10, int(xs[1]-20):int(xs[1]+20)]]
-    # plt.imshow(frames[0])
-    return frames, top, blue_top
+#This function pads the wall to ensure adequate removal
+def pad_wall(grad):
+    W = 2 # window length of neighbors
+    thresh = 0.1
+    mask = grad < thresh
+    kernel = np.ones(2*W+1)
+    mask_extended = binary_dilation(mask, kernel)
+    grad[mask_extended] = 0
+    return grad
 
+#This function locates the wall using Sobel Gradients
+def find_wall(img):
+    img=img.astype('uint8')
+    Gy = cv.Sobel(img, cv.CV_64F, 0, 1, ksize=3)
+    aGy=abs(Gy)
+    grad=np.median(aGy,axis=1)
+    grad=np.where(grad > 10, 0, 1)
+    grad=pad_wall(grad)
+    return grad
 
+#Normalize the frames suing the bleed through file
 def bleed(frame, BL):
     L430430=(BL[0])
     L410410=(BL[1])
@@ -118,7 +113,8 @@ def bleed(frame, BL):
     frameBL=[B430,B410,R430,R410]
     return frameBL
 
-def euler(f, thresh, x_old, y_old): #This function is used to check if a cell found in a frame is close to the cell in the previous frame, to avoid getting different cells
+#This function is used to check if a cell found in a frame is close to the cell in the previous frame, to avoid getting different cells. It is not being used at the moment
+def euler(f, thresh, x_old, y_old): 
     # print(len(f))
     pt=[0,0,0] 
     if len(f)==1:
@@ -172,27 +168,18 @@ def rescale_red(img, mask):
     masked = (masked)*mask
     return masked
 
+#Calcuate the absorption of hemoglobin 
 def mass(Hb):
-    # x=pt[0]; y=pt[1]
-    # parea=6.9
     parea=(6.9/20)**2; 
-    # Gx = cv.Sobel(img, cv.CV_64F, 1, 0, ksize=3)
-    base=np.min(Hb)+(np.max(Hb)-np.min(Hb))/3
-    level, cell_mask = cv.threshold(Hb, base, 255, cv.THRESH_BINARY)
-    # _, wall_mask = cv.threshold(Hb, 1.8*level, 255, cv.THRESH_BINARY)
-    kernel = np.ones((5,5),np.uint8)
-    dilation = cv.erode(cell_mask,kernel,iterations = 1)
-    kernel_outer = np.ones((5,5),np.uint8)
-    dilation_outer = cv.erode(cell_mask,kernel_outer,iterations = 1)
-    cell_mask=cell_mask/255
-    dilation=dilation/255
-    masked = (Hb*dilation)
-    # plt.imshow(masked)
-    Hb=Hb*(1-dilation_outer)
-    
-    average = masked[np.nonzero(masked)].mean()
-    Hbnorm=Hb/average
+    Hb=Hb.astype('uint8')
+    Gy = cv.Sobel(Hb, cv.CV_64F, 0, 1, ksize=3)
+    aGy=abs(Gy)
+    means=(np.mean(aGy, axis=0))
+    x=np.delete(Hb,np.where(means>20), axis=1)
+    means=(np.mean(x, axis=1))
+    Hbnorm=Hb/means[:,None]
     Hbnorm[Hbnorm <= 0] = 1
+    Hbnorm[Hbnorm >= 1] = 1
     hbmass=((parea*(10**-8)*64500*np.sum(np.sum((-np.log10(Hbnorm))))))
     
     return hbmass
@@ -254,10 +241,11 @@ def volume(cell, mask, top):
         vol=np.sum(tcell*mask)*parea
     return vol
    
-def saturation(frames): #Calcuate cell saturation
+#Calcuate oxy and deoxy hemoglobin mass and cell saturation
+def saturation(frames): 
      #camera pixel area
     b=[frames[0],frames[1]]
-    #Molecular absorbtion coefficints of something like that ~chemistry~
+    #Molecular absorbtion coefficients
     w430_o = 2.1486*(10**8)
     w430_d = 5.2448*(10**8)
     w410_o = 4.6723*(10**8)
@@ -265,7 +253,7 @@ def saturation(frames): #Calcuate cell saturation
 
     mass410=mass(b[1])
     mass430=mass(b[0])
-    
+
     e=mass410 #410
     f=mass430 #430
     #Set absorbtion values to equation constants
@@ -275,17 +263,17 @@ def saturation(frames): #Calcuate cell saturation
     d=w430_o
                 
     #Calcuate mass of oxygenated and deoxygenated hemoglobin
-    Mo=(a*f-e*c)/(a*d-b*c)
-    Md=(e*d-b*f)/(a*d-b*c)
+    Mo=(e*c-a*f)/(b*c-a*d)
+    Md=(b*f-e*d)/(b*c-a*d)
 
     saturation = Mo/(Mo+Md)
-    hbmass=e+f
+    hbmass=Mo+Md
     # print(Mo)
     # print('$')
     # print(Md)
     return saturation, hbmass
 
-#resize the images, and process them for the neural net
+#resize the images, and process them for the neural net, not being used at the moment
 def net(frames, top):
 
     B430 = frames[0]
@@ -339,10 +327,8 @@ def net(frames, top):
     # print(vol)
     return img, vol
 
-# Seperate the frames and find the cell in each frame
+#Seperate the RGB images and create a cell ROI in each
 def segment(frames,x_old, y_old,BL):
-    thresh410=25
-    thresh430=25
     img=frames
     if x_old<1 or y_old<1:   
         x_old=180; y_old=135
@@ -356,16 +342,30 @@ def segment(frames,x_old, y_old,BL):
     else:
         b=[L2,L1]
         frame=[L2,L1,R2,R1]
-    f430 = tp.locate(b[0], 31, preprocess=True, percentile=99,  invert=True, max_iterations=1, characterize =True, topn=2)
-    f410 = tp.locate(b[1], 31, preprocess=True, percentile=99,  invert=True, max_iterations=1, characterize =True, topn=2)
-    # print(f430.head())
-    pt430=euler(f430,thresh430, x_old, y_old)
-    pt410=euler(f410,thresh410, x_old, y_old)
     frame=bleed(frame,BL)
+    top=[np.mean(frame[2][int(0):int(10), int(0):int(40)]),np.mean(frame[3][int(0):int(10), int(0):int(40)])]
+    # plt.imshow(frame[0])
+    x430=find_cell_x(frame[0])
+    x410=find_cell_x(frame[1])
+    frame=[frame[0][:,int(x430-40):int(x430+40)],frame[1][:,int(x410-40):int(x410+40)],frame[2][:,int(x430-40):int(x430+40)],frame[3][:,int(x410-40):int(x410+40)]]
+    
+    grad430=find_wall(frame[2])
+    grad410=find_wall(frame[3])
+    b430=np.delete(frame[0], np.where(grad430 < 1), axis=0)
+    # plt.imshow(b430)
+    r430=np.delete(frame[2], np.where(grad430 < 1), axis=0)
+    pt430=[(np.argwhere(b430 == b430.min()))][0][0]
+    y430=pt430[0]; x430=pt430[1]
+    b410=np.delete(frame[1], np.where(grad410 < 1), axis=0)
+    r410=np.delete(frame[3], np.where(grad410 < 1), axis=0)
+    pt410=[(np.argwhere(b410 == b410.min()))][0][0]
+    y410=pt410[0]; x410=pt410[1]
+    frames=[b430[int(y430)-10:int(y430)+10, int(x410-20):int(x410+20)],b410[int(y410)-10:int(y410)+10, int(x410-20):int(x410+20)],r430[int(y430)-10:int(y430)+10, int(x430-20):int(x430+20)],r410[int(y410)-10:int(y410)+10, int(x410-20):int(x410+20)]]
 
-    return pt430,pt410, frame
+    return frames, top, pt430, pt410
 
-def getBL(): #Load the BL file
+#Load the BL file
+def getBL(): 
     with h5py.File('BL.h5', 'r') as BL:
         L430430=(BL['L430430'][:])
         L410410=(BL['L410410'][:])
@@ -377,7 +377,8 @@ def getBL(): #Load the BL file
     BL=[L430430,L410410,L630B,L430630,L410630,L630630,blr]
     return BL
 
-def main_run(video): #Run the anaylsis in the video
+ #Run the anaylsis in the video
+def main_run(video):
     BL=getBL()
     i=0
     x_old=0
@@ -399,32 +400,32 @@ def main_run(video): #Run the anaylsis in the video
         for frame in frames:
             x_old=np.mean(x[-3:])
             y_old=np.mean(y[-3:])
-            pt430, pt410, frame = segment(frame,x_old, y_old,BL)
+            frame, top, pt430, pt410 = segment(frame,x_old, y_old,BL)
             # print(pt430)
             # print(pt410)
-            if pt430[0]>21 and pt410[0]>21 and pt430[0]<339 and pt410[0]<339 and pt430[1]>11 and pt410[1]>11 and pt430[1]<239 and pt410[1]<239:
-                frames, top, blue_top=crop(frame,pt430,pt410)
-                sats, hbmass=saturation(frames)
+            if pt430[1]>=21 and pt410[1]>21 and pt430[1]<339 and pt410[0]<339 and pt430[0]>11 and pt410[0]>11 and pt430[0]<239 and pt410[0]<239:
+                sats, hbmass=saturation(frame)
                 saturations.append(sats)
                 hgb.append(hbmass)
-                img, vol=net(frames, top)
-                imgs.append(img)
-                volumes.append(vol)
-                x.append(pt410[0])
-                y.append(pt410[1])
-                I430.append(blue_top[0])
-                I410.append(blue_top[1])
+                # img, vol=net(frames, top)
+                # imgs.append(img)
+                # volumes.append(vol)
+                x.append(pt430[1])
+                # y.append(pt410[1])
+                # I430.append(blue_top[0])
+                # I410.append(blue_top[1])
             else:
                 saturations.append(np.nan)
-                volumes.append(np.nan)
+                # volumes.append(np.nan)
                 hgb.append(np.nan)
-                imgs.append(np.zeros([81,81,3]))
-                x.append(0)
-                I430.append(np.nan)
-                I410.append(np.nan)
+                # imgs.append(np.zeros([81,81,3]))
+                x.append(300)
+                # I430.append(np.nan)
+                # I410.append(np.nan)
         i=i+1
-    return imgs, saturations, volumes, x, hgb, I430, I410 
+    return imgs, saturations, volumes, x, hgb
 
+#view the video
 def veiw(video):
     BL=getBL()
     i=0
@@ -442,18 +443,18 @@ def veiw(video):
             # frame = video[i]#np.maximum(data2[i][0],data2[i][1])
             x_old=np.mean(x[-3:])
             y_old=np.mean(y[-3:])
-            pt430, pt410, frame = segment(frame,x_old, y_old,BL)
-            gray=cv.resize(frame[1], dsize=(720, 540), interpolation=cv.INTER_CUBIC).astype("uint8")
+            frames, top, pt430, pt410 = segment(frame,x_old, y_old,BL)
+            gray=cv.resize(frame[0], dsize=(720, 540), interpolation=cv.INTER_CUBIC).astype("uint8")
             # print(pt430)
             # gray = cv.cvtColor(frame[0], cv.COLOR_BayerBG2GRAY)
-            if pt430[0]>21 and pt410[0]>21 and pt430[0]<339 and pt410[0]<339 and pt430[1]>11 and pt410[1]>11 and pt430[1]<239 and pt410[1]<239:
-                frames, top, b=crop(frame, pt430, pt410)
+            if pt430[1]>21 and pt410[1]>21 and pt430[1]<339 and pt410[0]<339 and pt430[0]>11 and pt410[0]>11 and pt430[0]<239 and pt410[0]<239:
+                # frames, top, b=crop(frame, pt430, pt410)
                 sat, hb=saturation(frames)
                 pt430= np.asarray(pt430, dtype=np.float32)
                 pt410= np.asarray(pt410, dtype=np.float32)
                 ptres430=2*pt430; ptres410=2*pt410
-                x.append(pt410[0]); y.append(pt410[1])
-                locx=int(ptres410[0]); locy=int(ptres410[1])
+                x.append(pt410[1]); y.append(pt410[0])
+                locx=int(ptres410[1]); locy=int(ptres410[0])
                 # img = gray[y-40:y+40,x-40:x+40]
                 cv.rectangle(gray, (locx-40, locy-20), (locx+40, locy+20), (255,100,200),2)
                 # img=cv.resize(img, dsize=(200, 200), interpolation=cv.INTER_CUBIC).astype("uint8")
@@ -466,32 +467,7 @@ def veiw(video):
     # print(xf)
     cv.destroyAllWindows()
 
-# def CNN(imgs): #Run the CNN and display the resutls
-#     model=keras.models.load_model('CNN/model_ResNet50_A01.h5', safe_mode=False) #load the model
-#     cnn_imgs=np.stack( imgs, axis=0 )
-#     predictions = model.predict(cnn_imgs) #this is the line that calls the CNN to classify
-#     # print(predictions[0:10])
-
-#     threshold=0.5 #threshold is set at 0.5 to start
-#     labels=[]
-#     preds=[]
-#     cell_imgs=[]
-#     for i in range(len(predictions)):
-#         preds.append(predictions[i][0])
-#         cell_imgs.append(cnn_imgs[i][:,:,1])
-#         if predictions[i][0] > threshold:
-#             labels.append(0)
-#         else:
-#             labels.append(1)
-#     preds=(predictions[:,0]) #get the first index of the predicitons, I believe this is what we've been using
-#     preds=np.round(preds, 3)
-#     pred=np.array(preds) 
-#     sorted = pred.argsort() #sort the predicitons by descending order
-#     sorted_preds = pred[sorted[::-1]]
-#     sorted_cells = cnn_imgs[sorted[::-1]]
-#     # ipyplot.plot_images(sorted_cells, sorted_preds,max_images=500, img_width=50)
-#     return preds
-
+#write the video to .avi format
 def write(video, name):
     BL=getBL()
     i=0
@@ -523,6 +499,7 @@ def write(video, name):
     cv.destroyAllWindows()
     vid.release()
     
+#Chunk the video into N frame chunks for the CNN
 def chunk(video, num):
     BL=getBL()
     i=0
@@ -556,6 +533,7 @@ def chunk(video, num):
         i=i+1
     return stack
 
+#Save the chunk for CNN anaylsis
 def save_stack(stack, name):
     i=0
     imgs=[]
@@ -579,6 +557,7 @@ def save_stack(stack, name):
 def partition(alist, indices):
     return [alist[i:j] for i, j in zip([0]+indices, indices+[None])]
 
+#Check if a 
 def vol_step(volumes):
     double=False
     jump=[]
@@ -616,3 +595,155 @@ def CNN(subset_paths,model): #Run the CNN and display the resutls
     
     # ipyplot.plot_images(sorted_cells, sorted_preds,max_images=500, img_width=50)
     return predicted   
+
+###ANAYLSIS###
+
+def batch_analyze(file_path):
+    cells = {}
+    cell_paths=[]
+    raw=[]
+    # model=keras.models.load_model('CNN/model_time_3.keras') #load the model
+    files = glob.glob(file_path, 
+                    recursive = True)
+    files=natsorted(files)
+    n=0
+    for file in files:
+        print(file)
+        with h5py.File(file, 'r') as hf:
+            video = hf['data'][:]
+        _, saturations, volumes, x, hbmass = main_run(video)
+        saturations=np.asarray(saturations)
+        df_name='df0_'+str(n)
+        cell_paths.append(file)
+        dict = {'sat': saturations, 'mass': hbmass} 
+        cells[df_name] = pd.DataFrame(dict)
+        n=n+1
+    
+    return cells, cell_paths
+
+def sat_data(cells, cell_paths):
+    i=0
+    cell_sats = []
+    cell_vols =[]
+    cell_mass=[]
+
+
+    while i<len(cells):
+        saturations=cells[list(cells)[i]]['sat']
+        sat=np.stack( saturations, axis=0 )
+        # vols=cells[list(cells)[i]]['vol']
+        # vols=np.stack( vols, axis=0 )
+        # vols = vols[~np.isnan(vols)]
+        mass=cells[list(cells)[i]]['mass']
+        mass=np.stack( mass, axis=0 )
+        mass = mass[~np.isnan(mass)]
+        sat[(sat > 1) | (sat < -1)] = np.nan
+        d = {'sat': sat}#, 'preds': preds}
+        sat_df = pd.DataFrame(data=d)
+        sat_df['sat_mean']=sat_df['sat'].rolling(window=10).mean() 
+        sat_mean=sat_df['sat_mean'].to_list()
+        n = 355
+        fill = [np.nan] * n
+        sats = sat_mean
+        cell_sats.append(sats)
+        # cell_vols.append(vols)
+        cell_mass.append(mass)
+        i=i+1
+    saturations_df= pd.DataFrame(cell_sats)
+    saturations_df=saturations_df.T
+    saturations_df.columns = cell_paths
+
+    return saturations_df
+
+def moving_norm(sat_df,norm0, norm21):
+    xnorm=np.linspace(0, len(norm0),len(norm0))
+    # plt.plot(xnorm, norm0, '--', label="fitted")
+    # plt.plot(xnorm, norm21, '--', label="fitted")
+
+    sat_level=sat_df.copy(deep=True)
+    for column in sat_df:
+        (sat_level[column])=((sat_level[column])-norm0[0:len((sat_level[column]))])/norm21[0:len((sat_level[column]))]
+
+    sat_roll=sat_level.copy(deep=True)
+    sat_roll=sat_roll.rolling(window=10).mean() 
+
+    return sat_roll
+
+
+def plot_data(sats, sig, number_of_subplots, number_of_columns):
+    total = number_of_subplots
+    cols = number_of_columns
+    rows = total // cols
+    if total % cols != 0:
+        rows += 1
+
+    fig, axs = plt.subplots(rows,cols, figsize=(cols*3, rows*3), facecolor='w', edgecolor='k')
+    fig.subplots_adjust(hspace = .5, wspace=.001)
+    axs = axs.ravel()
+    i=0
+    path=[]
+    taus=[]
+    sat_fin=[]
+    sat_start=[]
+    start=[]
+    sat_drop=[]
+    for series_name, series in sats.items():
+        y=np.asarray(series[10:-50])
+        ys=y[~np.isnan(y)]
+        xs=np.linspace(0, (2*len(ys)/333),len(ys))
+
+        if sig==True:
+            try:
+                p0 = [150, min(ys), max(ys),0.05]
+                popt,pcov = curve_fit(piecewise_exponential, xs, ys,p0, method='dogbox')
+                x0, P, Yo, k = popt
+                sampleRate = 333 # Hz
+                tauSec = (1 / k) / sampleRate
+                tauS='{:.3}'.format(tauSec)
+                path.append(series_name)
+                taus.append(tauSec)
+                sat_fin.append(P)
+                sat_start.append(Yo)
+                start.append(x0)
+                sat_drop.append(Yo-P)
+
+
+                # determine quality of the fit
+                squaredDiffs = np.square(ys - piecewise_exponential(xs,x0, P, Yo, k ))
+                squaredDiffsFromMean = np.square(ys - np.mean(ys))
+                rSquared = 1 - np.sum(squaredDiffs) / np.sum(squaredDiffsFromMean)
+                if rSquared>0.1:
+                    rsq='{:.3}'.format(rSquared)
+                    axs[i].plot(xs, ys, '.', label="data")
+                    axs[i].plot(xs, piecewise_exponential(xs,x0, P, Yo, k ), '--', label="fitted")
+                    axs[i].set_ylim([0, 1])
+                    axs[i].text(150,0.7,f"R² = {rsq}" , fontsize=10)
+                    axs[i].text(150,0.6,f"tau = {tauS}" , fontsize=10)
+                else:
+                    pass
+            except RuntimeError:
+                print("Error - curve_fit failed")
+                axs[i].plot(xs, ys, '.', label="data")
+                axs[i].set_ylim([0, 1])
+        else:
+            try:
+                sat_fin.append(np.nanmean(y))
+                p1 = [-0.01,00]
+                popt,pcov = curve_fit(linear, xs, ys,p1, method='dogbox')
+                m, b = popt
+                slp='{:.3e}'.format(m)
+                squaredDiffs = np.square(ys - linear(xs,m,b))
+                squaredDiffsFromMean = np.square(ys - np.mean(ys))
+                rSquared = 1 - np.sum(squaredDiffs) / np.sum(squaredDiffsFromMean)
+                rsq='{:.3}'.format(rSquared)
+                axs[i].plot(xs, ys, '.', label="data")
+                axs[i].plot(xs, linear(xs,m,b), '--', label="fitted")
+                axs[i].set_ylim([-0.1, 1.1])
+                axs[i].text(3,0.7,f"R² = {rsq}" , fontsize=10)
+                axs[i].text(3,0.6,f"slope = {slp}" , fontsize=10)
+            except RuntimeError:
+                print("Error - curve_fit failed")
+                pass
+        i=i+1
+    d = {'name': path, 'tau': taus,'start': start, 'sat_start': sat_start, 'sat_fin': sat_fin, 'sat_drop': sat_drop}
+    # tau_df = pd.DataFrame(data=d)
