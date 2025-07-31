@@ -19,32 +19,22 @@ from scipy.ndimage import interpolation
 from scipy.signal import find_peaks
 from scipy.ndimage import uniform_filter1d
 from PIL import Image
-# import tqdm
-# import einops
-# import random
+import random
+import shutil
 import pathlib
-# import itertools
-# import collections
 import keras
 import os
 import ruptures as rpt
 from keras import layers
 import seaborn as sns
 import tensorflow as tf
-# from tensorflow.keras.models import Sequential
-# from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, Conv2D, MaxPooling2D
 from PIL import Image
-# from tensorflow.keras.applications import ResNet50
-# from tensorflow.keras.layers import Dense, Flatten, GlobalAveragePooling2D, BatchNormalization
-# from sklearn.metrics import confusion_matrix, classification_report
-# import pathlib
-# from tensorflow.keras.optimizers import Adam
 import ipyplot
 import glob
 from PIL import Image
 from natsort import natsorted
 from scipy.ndimage.morphology import binary_dilation
-# from CNN_utils import *
+
 
 #A few fit functions
 def sigmoid(x, L ,x0, k, b):
@@ -251,8 +241,7 @@ def segment(frames,x_old, y_old,BL):
 
 def masking(cell):
     cell = (255*cell).astype(np.uint8)
-    base=np.min(cell)+np.max(cell)/2
-    _,mask= cv.threshold(cell,base,255,cv.THRESH_BINARY)
+    _,mask= cv.threshold(cell,0,255,cv.THRESH_OTSU)
     return mask
 
 def center(cell, mask):
@@ -546,6 +535,68 @@ def batch_analyze(file_path):
     
     return cells, cell_paths
 
+def batch_image(file_path):
+    cells = {}
+    cell_paths=[]
+    files = glob.glob(file_path, 
+                    recursive = True)
+    files=natsorted(files)
+    n=0
+    for file in files:
+        print(file)
+        name=(os.path.basename(file)[0:-3])
+        print(name)
+        double=False
+        with h5py.File(file, 'r') as hf:
+            video = hf['data'][:]
+        imgs, saturations, MCV, x, MCH = main_run(video)
+        x_df= pd.DataFrame(x)
+        x_df=x_df.dropna()
+        x_list=x_df[0].to_list()
+        # double=double_step(x_list)
+        if double==False:
+            cells=[]
+            for img in imgs:
+                if img.size==19683:
+                    cells.append(img)
+
+            i=0
+            while i<len(cells):
+                A = cells[i]
+                filename='CNN/dataset_tracking_2025/Data/Soly/'+name+'_%d.png'%i
+                tf.keras.utils.save_img(filename, A)
+                i=i+1
+        n=n+1
+
+def subsample_images(source_folder, destination_folder, sub_fraction):
+    """
+    Subsamples a specified number of images from a source folder and copies them
+    to a destination folder.
+
+    Args:
+        source_folder (str): The path to the folder containing the original images.
+        destination_folder (str): The path to the folder where subsampled images
+                                  will be copied.
+        num_samples (int): The number of images to subsample.
+    """
+    if not os.path.exists(destination_folder):
+        os.makedirs(destination_folder)
+
+    image_files = [f for f in os.listdir(source_folder)
+                   if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp'))]
+
+    num_samples=int(len(image_files)*sub_fraction)
+    if num_samples > len(image_files):
+        print(f"Warning: Requested {num_samples} samples, but only {len(image_files)} images available.")
+        num_samples = len(image_files)
+
+    selected_files = random.sample(image_files, num_samples)
+
+    for filename in selected_files:
+        source_path = os.path.join(source_folder, filename)
+        destination_path = os.path.join(destination_folder, filename)
+        shutil.copy(source_path, destination_path)
+
 def find_step(ps):
     y=np.asarray(ps)
     dary=y[~np.isnan(y)]
@@ -633,18 +684,23 @@ def sat_data(cells, cell_paths,threshold):
 
     return saturations_df, vols_df, mass_df, conc_df, pred_df, class_df
 
-def moving_norm(sat_df,norm0, norm21):
-    xnorm=np.linspace(0, len(norm0),len(norm0))
-    # plt.plot(xnorm, norm0, '--', label="fitted")
-    # plt.plot(xnorm, norm21, '--', label="fitted")
+def scale_data(df, size):
+    r = pd.RangeIndex(0, size+3, 1)
+    df = df.sort_index()
+    new_idx = np.linspace(df.index[0], df.index[-1], len(r))
+    df= (df.reindex(new_idx, method='ffill', limit=1).iloc[1:].interpolate())
+    df=df.reset_index()
+    df=df.drop('index', axis=1)
+    df=df.squeeze()
+    return df
 
+def moving_norm(sat_df,norm0, norm21):
+    norm0=scale_data(norm0,len(sat_df))
+    norm21=scale_data(norm21,len(sat_df))
     sat_level=sat_df.copy(deep=True)
     for column in sat_df:
         (sat_level[column])=((sat_level[column])-norm0[0:len((sat_level[column]))])/(norm21[0:len((sat_level[column]))]-norm0[0:len((sat_level[column]))])
-
     sat_roll=sat_level.copy(deep=True)
-    # sat_roll=sat_roll.rolling(window=10).mean() 
-
     return sat_roll
 
 def moving_average(x, w):
@@ -683,7 +739,7 @@ def plot_sat_data(sats, sig, number_of_subplots, number_of_columns):
     start=[]
     sat_drop=[]
     for series_name, series in sats.items():
-        y=np.asarray(series[100:-900])
+        y=np.asarray(series[100:-150])
         ys=y[~np.isnan(y)]
         xs=np.linspace(0, (2*len(ys)/333),len(ys))
 
@@ -692,7 +748,7 @@ def plot_sat_data(sats, sig, number_of_subplots, number_of_columns):
                 p0 = [2.5, min(ys), max(ys),2]
                 popt,pcov = curve_fit(piecewise_exponential, xs, ys,p0, method='dogbox')
                 x0, P, Yo, k = popt
-                sampleRate = 1 # Hz
+                sampleRate = 167 # Hz
                 tauSec = (1 / k) / sampleRate
                 tauS='{:.3}'.format(tauSec)
                 path.append(series_name)
