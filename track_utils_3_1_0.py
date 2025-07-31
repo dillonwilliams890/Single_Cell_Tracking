@@ -556,16 +556,18 @@ def batch_image(file_path):
         # double=double_step(x_list)
         if double==False:
             cells=[]
-            for img in imgs:
-                if img.size==19683:
-                    cells.append(img)
-
             i=0
-            while i<len(cells):
-                A = cells[i]
-                filename='CNN/dataset_tracking_2025/Data/Soly/'+name+'_%d.png'%i
-                tf.keras.utils.save_img(filename, A)
+            # while i<len(imgs):
+            for img in imgs:
+                if img.size==19683 and MCH[i] < 5e-10 and MCH[i] > -0 and MCV[i]<200 and MCV[i] >20:
+                    cells.append(img)
                 i=i+1
+            j=0
+            while j<len(cells):
+                A = cells[j]
+                filename='CNN/dataset_tracking_2025/FULL_DATA/SOLY/'+name+'_%d.png'%j
+                tf.keras.utils.save_img(filename, A)
+                j=j+1
         n=n+1
 
 def subsample_images(source_folder, destination_folder, sub_fraction):
