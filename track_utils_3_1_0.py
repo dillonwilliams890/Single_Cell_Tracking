@@ -249,13 +249,15 @@ def center(cell, mask):
     im_pad=np.zeros((81,81))
     mask_pad=np.zeros((81,81))
     out = np.zeros_like(mask)
+
     if len(contours)>0:
         for cnt in contours:
             area = cv.contourArea(cnt)
             if area>300:
                 x, y, w, h = cv.boundingRect(cnt)
+                hull=cv.convexHull(cnt)
                 im_masked=cell#
-                mask=cv.drawContours(out, contours, -1, 255, -1)
+                mask=cv.drawContours(out, [hull], -1, (255, 255, 255), -1)
                 im_center=im_masked[int(y):int(y)+h,int(x):int(x)+w]
                 mask_center=mask[int(y):int(y)+h,int(x):int(x)+w]
                 im_pad=padding(im_center, 81, 81)
@@ -305,7 +307,7 @@ def net(B, R):
     B410 = B[1]
     R430 = R[0]
     R410 = R[1]
-
+    
     B430=cv.resize(B430, dsize=(162, 81), interpolation=cv.INTER_LINEAR)
     B410=cv.resize(B410, dsize=(162, 81), interpolation=cv.INTER_LINEAR)
     R430=cv.resize(R430, dsize=(162, 81), interpolation=cv.INTER_LINEAR)
