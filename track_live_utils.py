@@ -29,9 +29,17 @@ from simple_pid import PID
 from Fluigent.SDK import fgt_init, fgt_close
 from Fluigent.SDK import fgt_set_pressure, fgt_get_pressure, fgt_get_pressureRange
 import tkinter as tk
+import bisect
 
+def find_closest_index(a, x):
+    i = bisect.bisect_left(a, x)
+    if i >= len(a):
+        i = len(a) - 1
+    elif i and a[i] - x > x - a[i - 1]:
+        i = i - 1
+    return (i, a[i])
 
-def initial(img, thresh):
+def initial(img, thresh, ecc):
     # frame=img
     signal=0
     
@@ -57,12 +65,12 @@ def initial(img, thresh):
         signal=f.signal
         ecen=f.ecc
         x=f.x
-    if signal>thresh  and x<150 and ecen<0.4:
+    if signal>thresh  and x<150 and ecen<ecc:
         cell=True
     return cell
 
-def feedback(frames,x_old, y_old, thresh):
-    ecc=0.4
+def feedback(frames,x_old, y_old, thresh, ecc):
+    # ecc=0.6
     pt=[0,0,0,0]
     ts=0
     img=frames
@@ -114,17 +122,12 @@ def feedback(frames,x_old, y_old, thresh):
             ts=0
 
     return pt, ts
-def init(core):
-    x_init=core.get_x_position()
-    y_init=core.get_y_position()
-    z_init=core.get_position()
-    return x_init, y_init, z_init
 
-def fin(core):
-    x_fin=core.get_x_position()
-    y_fin=core.get_y_position()
-    z_fin=core.get_position()
-    return x_fin, y_fin, z_fin
+def location(core):
+    x=core.get_x_position()
+    y=core.get_y_position()
+    z=core.get_position()
+    return x, y, z
 
 
 def set_to_start(core,pressure, x_init,y_init):
@@ -133,27 +136,33 @@ def set_to_start(core,pressure, x_init,y_init):
     fgt_init()
     fgt_set_pressure(0, pressure)
 
-
-def run(core,pressure, x_init,y_init, x_fin,y_fin, thresh):
-    press=pressure
+def run(core,press, x_init,y_init, z_init, x_fin,y_fin, z_fin, z_mid, thresh, ecc):
     fgt_init()   
     fgt_set_pressure(0, press)
     core.set_xy_position(x_init,y_init)
     core.wait_for_device(core.get_xy_stage_device())
+    core.set_position(z_init)
+    core.wait_for_device(core.get_xy_stage_device())
     i=0
+    j=0
     p=press
     imgs=[]
     locx=[]
     pressures=[]
     run=False
     cell=False
+    passed=False
     x_old=0
     y_old=0
     x=[180,180,180]
     y=[145,145,145] 
     t=[]
-    pid = PID(0.5, 0.01, 1, setpoint=200)
+    pid = PID(0.7, 0.1, 1.2, setpoint=200)
     pid.output_limits = (-2, 2)
+    zi=np.linspace(z_init,z_mid,150)
+    zf=np.linspace(z_mid,z_fin,150)
+    zs=np.hstack([zi,zf])
+    xs=np.linspace(x_init,x_fin,300)
     with Camera() as cam: # Acquire and initialize Camera
         # Start recording
         fgt_init()
@@ -164,7 +173,7 @@ def run(core,pressure, x_init,y_init, x_fin,y_fin, thresh):
         while run==False:
             cam.start()
             frame = [cam.get_array() for n in range(2)]
-            cell=initial(frame, thresh)
+            cell=initial(frame, thresh, ecc)
             # print(cell)
             # print(time.time())
             if cell ==True:
@@ -172,14 +181,26 @@ def run(core,pressure, x_init,y_init, x_fin,y_fin, thresh):
                 core.set_xy_position(x_fin,y_fin) 
                 # time.sleep(0.01)
                 cam.start()  
-                while  cell==True and core.get_x_position()<x_fin-1:
+                
+                while  cell==True and core.get_x_position()<x_fin-5:
+                    x_pos=core.get_x_position()
+                    if x_pos>xs[j+1]:
+                            passed=True
+                    else:
+                            passed=False
+                    if passed==True:
+                            core.set_position(zs[j])
+                            j=j+1
+                            passed=False
                     x_old=np.mean(x[-3:])
                     # print(x_old)
                     y_old=np.mean(y[-3:])
                     img = [cam.get_array() for n in range(8)] # Get 10 frames
                     # frame = img#np.maximum(data2[i][0],data2[i][1])
-                    pt, ts = feedback(img,x_old, y_old, thresh)
+                    pt, ts = feedback(img,x_old, y_old, thresh, ecc)
                     x_pt=pt[0]; y_pt=pt[1]
+                    # if x_pt==0:
+                    #     x_pt=x_old
                     imgs.append(img)
                     drift=2*0.1725*(x-x_old)
                     x_pid=np.mean(x[-3:])
@@ -191,17 +212,11 @@ def run(core,pressure, x_init,y_init, x_fin,y_fin, thresh):
                     t.append(i)
             # print(drift)
                     if  ts > 0 and p>10 and  p<1499:
-                        
-                    #     p=p+2
+                        if p<press-150:
+                            p=press-150
                     #     fgt_set_pressure(0, p)
-                    # elif drift>2 and drift<50 and ts > 0 and  p>100 and  p<1499:
-                    #     p=p-3
-                    #     fgt_set_pressure(0, p)
-                        if p<press-100:
-                            p=press-100
-                    #     fgt_set_pressure(0, p)
-                        elif p>press+100:
-                            p=press+100
+                        elif p>press+150:
+                            p=press+150
                         else:
                             p+=pressure
                     
@@ -214,11 +229,6 @@ def run(core,pressure, x_init,y_init, x_fin,y_fin, thresh):
                     # x_old=x
                     # y_old=y
                     i=i+1
-                    # cv.rectangle(img[0], (pt[1]-20, pt[1]-20), (pt[0]+20, pt[0]+20), (255,100,200),2)
-                    # cv.imshow('Single Track', img)
-        # # press 'q' to bre
-                
-
                 run=True
             else:
                 run==False
@@ -226,6 +236,99 @@ def run(core,pressure, x_init,y_init, x_fin,y_fin, thresh):
     cv.destroyAllWindows()
     plt.plot(locx)   
     return imgs, pressures    
+
+# def run(core,pressure, x_init,y_init, x_fin,y_fin, thresh, ecc):
+#     press=pressure
+#     fgt_init()   
+#     fgt_set_pressure(0, press)
+#     core.set_xy_position(x_init,y_init)
+#     core.wait_for_device(core.get_xy_stage_device())
+#     i=0
+#     p=press
+#     imgs=[]
+#     locx=[]
+#     pressures=[]
+#     run=False
+#     cell=False
+#     x_old=0
+#     y_old=0
+#     x=[180,180,180]
+#     y=[145,145,145] 
+#     t=[]
+#     pid = PID(0.5, 0.01, 1, setpoint=200)
+#     pid.output_limits = (-2, 2)
+#     with Camera() as cam: # Acquire and initialize Camera
+#         # Start recording
+#         fgt_init()
+#         fgt_set_pressure(0, p)
+#         # core.wait_for_device(core.get_xy_stage_device())
+#         # while cell==False:
+#             # print(time.time())
+#         while run==False:
+#             cam.start()
+#             frame = [cam.get_array() for n in range(2)]
+#             cell=initial(frame, thresh, ecc)
+#             # print(cell)
+#             # print(time.time())
+#             if cell ==True:
+#                 # cam.stop()
+#                 core.set_xy_position(x_fin,y_fin) 
+#                 # time.sleep(0.01)
+#                 cam.start()  
+#                 while  cell==True and core.get_x_position()<x_fin-1:
+#                     x_old=np.mean(x[-3:])
+#                     # print(x_old)
+#                     y_old=np.mean(y[-3:])
+#                     img = [cam.get_array() for n in range(8)] # Get 10 frames
+#                     # frame = img#np.maximum(data2[i][0],data2[i][1])
+#                     pt, ts = feedback(img,x_old, y_old, thresh, ecc)
+#                     x_pt=pt[0]; y_pt=pt[1]
+#                     imgs.append(img)
+#                     drift=2*0.1725*(x-x_old)
+#                     x_pid=np.mean(x[-3:])
+#                     pressure=pid(x_pid)
+#                     locx.append(x_pt)
+#                     x.append(x_pt)
+#                     y.append(y_pt)
+#                     print(x_pt)
+#                     t.append(i)
+#             # print(drift)
+#                     if  ts > 0 and p>10 and  p<1499:
+                        
+#                     #     p=p+2
+#                     #     fgt_set_pressure(0, p)
+#                     # elif drift>2 and drift<50 and ts > 0 and  p>100 and  p<1499:
+#                     #     p=p-3
+#                     #     fgt_set_pressure(0, p)
+#                         if p<press-100:
+#                             p=press-100
+#                     #     fgt_set_pressure(0, p)
+#                         elif p>press+100:
+#                             p=press+100
+#                         else:
+#                             p+=pressure
+                    
+#                     else:
+#                         p=p
+
+#                 # print(time.time())
+#                     pressures.append(p)
+#                     fgt_set_pressure(0, p)
+#                     # x_old=x
+#                     # y_old=y
+#                     i=i+1
+#                     # cv.rectangle(img[0], (pt[1]-20, pt[1]-20), (pt[0]+20, pt[0]+20), (255,100,200),2)
+#                     # cv.imshow('Single Track', img)
+#         # # press 'q' to bre
+                
+
+#                 run=True
+#             else:
+#                 run==False
+#             cam.stop()
+#     cv.destroyAllWindows()
+#     plt.plot(locx)   
+#     return imgs, pressures    
 
 def save(name, imgs):
     #track_vids/20250313_MGH2118/4/vids/20250313_MGH2118_4_3.h5
@@ -280,30 +383,34 @@ def veiw_50(imgs):
     cv.destroyAllWindows()
      # %%
 # %%
-
-#%%
-def collect(core, name, pressure, start, end,x_init,y_init, x_fin, y_fin, thresh):
+def collect(core, name, press, start, end, x_init,y_init, z_init, x_fin,y_fin, z_fin, thresh, ecc):
     n=start
+    
     while n<end:
-        press=pressure
-        fgt_init()   
+        fgt_init()
         fgt_set_pressure(0, press)
         core.set_xy_position(x_init,y_init)
         core.wait_for_device(core.get_xy_stage_device())
+        core.set_position(z_init)
+        core.wait_for_device(core.get_xy_stage_device())
         i=0
+        j=0
         p=press
         imgs=[]
         locx=[]
         pressures=[]
         run=False
         cell=False
+        passed=False
         x_old=0
         y_old=0
-        x=[0,0,0]
-        y=[0,0,0] 
+        x=[180,180,180]
+        y=[145,145,145] 
         t=[]
-        pid = PID(0.5, 0.01, 1, setpoint=200)
+        pid = PID(0.7, 0.01, 1, setpoint=240)
         pid.output_limits = (-2, 2)
+        zs=np.linspace(z_init,z_fin,300)
+        xs=np.linspace(x_init,x_fin,300)
         with Camera() as cam: # Acquire and initialize Camera
             # Start recording
             fgt_init()
@@ -314,20 +421,31 @@ def collect(core, name, pressure, start, end,x_init,y_init, x_fin, y_fin, thresh
             while run==False:
                 cam.start()
                 frame = [cam.get_array() for n in range(2)]
-                cell=initial(frame, thresh)
+                cell=initial(frame, thresh, ecc)
+                # print(cell)
                 # print(time.time())
                 if cell ==True:
                     # cam.stop()
                     core.set_xy_position(x_fin,y_fin) 
                     # time.sleep(0.01)
                     cam.start()  
+                    
                     while  cell==True and core.get_x_position()<x_fin-1:
+                        x_pos=core.get_x_position()
+                        if x_pos>xs[j+1]:
+                                passed=True
+                        else:
+                                passed=False
+                        if passed==True:
+                                core.set_position(zs[j])
+                                j=j+1
+                                passed=False
                         x_old=np.mean(x[-3:])
                         # print(x_old)
                         y_old=np.mean(y[-3:])
                         img = [cam.get_array() for n in range(8)] # Get 10 frames
                         # frame = img#np.maximum(data2[i][0],data2[i][1])
-                        pt, ts = feedback(img,x_old, y_old, thresh)
+                        pt, ts = feedback(img,x_old, y_old, thresh, ecc)
                         x_pt=pt[0]; y_pt=pt[1]
                         imgs.append(img)
                         drift=2*0.1725*(x-x_old)
@@ -339,25 +457,19 @@ def collect(core, name, pressure, start, end,x_init,y_init, x_fin, y_fin, thresh
                         print(x_pt)
                         t.append(i)
                 # print(drift)
-                        if  ts > 0 and p>10 and  p<1499:
-                            
-                        #     p=p+2
+                        if  ts > 0 and p>100 and  p<1499:
+                            if p<press-150:
+                                p=press-150
                         #     fgt_set_pressure(0, p)
-                        # elif drift>2 and drift<50 and ts > 0 and  p>100 and  p<1499:
-                        #     p=p-3
-                        #     fgt_set_pressure(0, p)
-                            if p<press-50:
-                                p=press-50
-                        #     fgt_set_pressure(0, p)
-                            elif p>press+50:
-                                p=press+50
+                            elif p>press+150:
+                                p=press+150
                             else:
                                 p+=pressure
                         
                         else:
                             p=p
 
-                    # print(time.time())
+                        # print(p)
                         pressures.append(p)
                         fgt_set_pressure(0, p)
                         # x_old=x
@@ -370,12 +482,110 @@ def collect(core, name, pressure, start, end,x_init,y_init, x_fin, y_fin, thresh
         print(n)
         if locx.count(0)<40:
 
-            path=name#'track_vids/20250313_MGH2118/5/vids/20250313_MGH2118_21_'+str(n)+'.h5'
-            # path2='track_vids/20250313_MGH2118/5/press/20250313_MGH2118_21_press_'+str(n)+'.h5'
+            path=name+str(n)+'.h5'
+            path2=name +str(n)+'_press'+'.h5'#'track_vids/20250313_MGH2118/0/press/20250313_MGH2118_21_press_'+str(n)+'.h5'
             with h5py.File(path,'w') as h5f:
                 h5f.create_dataset("data", data=imgs)
-            # with h5py.File(path2,'w') as h5f:
-            #     h5f.create_dataset("data", data=pressures)
+            with h5py.File(path2,'w') as h5f:
+                h5f.create_dataset("data", data=pressures)
             n=n+1
         else:
             n=n
+#%%
+# def collect(core, name, pressure, start, end,x_init,y_init, x_fin, y_fin, thresh):
+#     n=start
+#     while n<end:
+#         press=pressure
+#         fgt_init()   
+#         fgt_set_pressure(0, press)
+#         core.set_xy_position(x_init,y_init)
+#         core.wait_for_device(core.get_xy_stage_device())
+#         i=0
+#         p=press
+#         imgs=[]
+#         locx=[]
+#         pressures=[]
+#         run=False
+#         cell=False
+#         x_old=0
+#         y_old=0
+#         x=[0,0,0]
+#         y=[0,0,0] 
+#         t=[]
+#         pid = PID(0.5, 0.01, 1, setpoint=200)
+#         pid.output_limits = (-2, 2)
+#         with Camera() as cam: # Acquire and initialize Camera
+#             # Start recording
+#             fgt_init()
+#             fgt_set_pressure(0, p)
+#             # core.wait_for_device(core.get_xy_stage_device())
+#             # while cell==False:
+#                 # print(time.time())
+#             while run==False:
+#                 cam.start()
+#                 frame = [cam.get_array() for n in range(2)]
+#                 cell=initial(frame, thresh)
+#                 # print(time.time())
+#                 if cell ==True:
+#                     # cam.stop()
+#                     core.set_xy_position(x_fin,y_fin) 
+#                     # time.sleep(0.01)
+#                     cam.start()  
+#                     while  cell==True and core.get_x_position()<x_fin-1:
+#                         x_old=np.mean(x[-3:])
+#                         # print(x_old)
+#                         y_old=np.mean(y[-3:])
+#                         img = [cam.get_array() for n in range(8)] # Get 10 frames
+#                         # frame = img#np.maximum(data2[i][0],data2[i][1])
+#                         pt, ts = feedback(img,x_old, y_old, thresh)
+#                         x_pt=pt[0]; y_pt=pt[1]
+#                         imgs.append(img)
+#                         drift=2*0.1725*(x-x_old)
+#                         x_pid=np.mean(x[-3:])
+#                         pressure=pid(x_pid)
+#                         locx.append(x_pt)
+#                         x.append(x_pt)
+#                         y.append(y_pt)
+#                         print(x_pt)
+#                         t.append(i)
+#                 # print(drift)
+#                         if  ts > 0 and p>10 and  p<1499:
+                            
+#                         #     p=p+2
+#                         #     fgt_set_pressure(0, p)
+#                         # elif drift>2 and drift<50 and ts > 0 and  p>100 and  p<1499:
+#                         #     p=p-3
+#                         #     fgt_set_pressure(0, p)
+#                             if p<press-50:
+#                                 p=press-50
+#                         #     fgt_set_pressure(0, p)
+#                             elif p>press+50:
+#                                 p=press+50
+#                             else:
+#                                 p+=pressure
+                        
+#                         else:
+#                             p=p
+
+#                     # print(time.time())
+#                         pressures.append(p)
+#                         fgt_set_pressure(0, p)
+#                         # x_old=x
+#                         # y_old=y
+#                         i=i+1
+#                     run=True
+#                 else:
+#                     run==False
+#                 cam.stop()
+#         print(n)
+#         if locx.count(0)<40:
+
+#             path=name#'track_vids/20250313_MGH2118/5/vids/20250313_MGH2118_21_'+str(n)+'.h5'
+#             # path2='track_vids/20250313_MGH2118/5/press/20250313_MGH2118_21_press_'+str(n)+'.h5'
+#             with h5py.File(path,'w') as h5f:
+#                 h5f.create_dataset("data", data=imgs)
+#             # with h5py.File(path2,'w') as h5f:
+#             #     h5f.create_dataset("data", data=pressures)
+#             n=n+1
+#         else:
+#             n=n
