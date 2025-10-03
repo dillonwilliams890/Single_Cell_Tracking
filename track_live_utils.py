@@ -30,6 +30,7 @@ from Fluigent.SDK import fgt_init, fgt_close
 from Fluigent.SDK import fgt_set_pressure, fgt_get_pressure, fgt_get_pressureRange
 import tkinter as tk
 import bisect
+from scipy.interpolate import UnivariateSpline
 
 def find_closest_index(a, x):
     i = bisect.bisect_left(a, x)
@@ -136,12 +137,12 @@ def set_to_start(core,pressure, x_init,y_init):
     fgt_init()
     fgt_set_pressure(0, pressure)
 
-def run(core,press, x_init,y_init, z_init, x_fin,y_fin, z_fin, z_mid, thresh, ecc):
+def run(core,press, x_path, y_path, z_path, thresh, ecc):
     fgt_init()   
     fgt_set_pressure(0, press)
-    core.set_xy_position(x_init,y_init)
+    core.set_xy_position(x_path[0],y_path[0])
     core.wait_for_device(core.get_xy_stage_device())
-    core.set_position(z_init)
+    core.set_position(z_path[0])
     core.wait_for_device(core.get_xy_stage_device())
     i=0
     j=0
@@ -157,12 +158,11 @@ def run(core,press, x_init,y_init, z_init, x_fin,y_fin, z_fin, z_mid, thresh, ec
     x=[180,180,180]
     y=[145,145,145] 
     t=[]
-    pid = PID(0.7, 0.1, 1.2, setpoint=200)
-    pid.output_limits = (-2, 2)
-    zi=np.linspace(z_init,z_mid,150)
-    zf=np.linspace(z_mid,z_fin,150)
-    zs=np.hstack([zi,zf])
-    xs=np.linspace(x_init,x_fin,300)
+    xs = np.linspace(min(x_path), max(x_path), 200)
+    spl = UnivariateSpline(x_path, z_path, s=0, k=2)
+    zs = spl(xs)
+    pid = PID(0.3, 0.05, 1, setpoint=180)
+    pid.output_limits = (-1, 1)
     with Camera() as cam: # Acquire and initialize Camera
         # Start recording
         fgt_init()
@@ -178,11 +178,11 @@ def run(core,press, x_init,y_init, z_init, x_fin,y_fin, z_fin, z_mid, thresh, ec
             # print(time.time())
             if cell ==True:
                 # cam.stop()
-                core.set_xy_position(x_fin,y_fin) 
+                core.set_xy_position(x_path[-1],y_path[-1]) 
                 # time.sleep(0.01)
                 cam.start()  
                 
-                while  cell==True and core.get_x_position()<x_fin-5:
+                while  cell==True and core.get_x_position()<x_path[-1]-5:
                     x_pos=core.get_x_position()
                     if x_pos>xs[j+1]:
                             passed=True
